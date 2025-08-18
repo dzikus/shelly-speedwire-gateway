@@ -6,7 +6,6 @@ mqtt:
   broker_port: 1883                    # MQTT broker port (default: 1883)
   base_topic: shellies/shellyem3-XXXXXXXXXXXX  # Replace with your Shelly EM3 device ID
   keepalive: 60                        # Connection keepalive interval in seconds
-  invert_power: true                   # Set to true if positive power should mean grid consumption
   # username: mqtt_user                # Uncomment and set if authentication is required
   # password: mqtt_pass                # Uncomment and set if authentication is required
 

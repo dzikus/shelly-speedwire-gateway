@@ -1,16 +1,16 @@
 FROM python:3.13-slim
 
-RUN useradd -m -u 1000 -s /bin/bash gateway
-
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    rm -f requirements.txt
+COPY requirements.txt shelly_speedwire_gateway.py ./
 
-COPY shelly_speedwire_gateway.py .
-
-RUN printf '#!/bin/sh\n\
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends procps && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd -m -u 1000 -s /bin/bash gateway && \
+    pip install --no-cache-dir -r requirements.txt && \
+    rm -f requirements.txt && \
+    printf '#!/bin/sh\n\
 set -e\n\
 \n\
 # Check if config file already exists (e.g., mounted via volume)\n\
@@ -25,7 +25,6 @@ mqtt:\n\
   broker_port: ${MQTT_BROKER_PORT}\n\
   base_topic: ${MQTT_BASE_TOPIC}\n\
   keepalive: ${MQTT_KEEPALIVE}\n\
-  invert_power: ${MQTT_INVERT_POWER}\n\
 $([ -n "$MQTT_USERNAME" ] && echo "  username: ${MQTT_USERNAME}")\n\
 $([ -n "$MQTT_PASSWORD" ] && echo "  password: ${MQTT_PASSWORD}")\n\
 \n\
@@ -49,9 +48,8 @@ fi\n\
 \n\
 # Run the application\n\
 exec python3 /app/shelly_speedwire_gateway.py\n' \
-> /usr/local/bin/docker-entrypoint.sh
-
-RUN chmod 755 /usr/local/bin/docker-entrypoint.sh && \
+    > /usr/local/bin/docker-entrypoint.sh && \
+    chmod 755 /usr/local/bin/docker-entrypoint.sh && \
     chmod 644 /app/shelly_speedwire_gateway.py && \
     chown gateway:gateway /app && \
     chmod 755 /app && \
@@ -66,7 +64,6 @@ ENV MQTT_BROKER_HOST=localhost
 ENV MQTT_BROKER_PORT=1883
 ENV MQTT_BASE_TOPIC=shellies/shellyem3-XXXXXXXXXXXX
 ENV MQTT_KEEPALIVE=60
-ENV MQTT_INVERT_POWER=true
 ENV MQTT_USERNAME=""
 ENV MQTT_PASSWORD=""
 

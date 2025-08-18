@@ -12,7 +12,6 @@ services:
       - MQTT_BROKER_PORT=1883
       - MQTT_BASE_TOPIC=shellies/shellyem3-XXXXXXXXXXXX  # Change to your Shelly device ID
       - MQTT_KEEPALIVE=60
-      - MQTT_INVERT_POWER=true              # true = positive power means grid consumption
       # - MQTT_USERNAME=mqtt_user           # Uncomment if auth required
       # - MQTT_PASSWORD=mqtt_pass           # Uncomment if auth required
 
