@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  shelly-speedwire-gateway:
+    image: dzikus99/shelly-speedwire-gateway:latest
+    container_name: shelly-speedwire
+    restart: unless-stopped
+    network_mode: host  # REQUIRED for multicast/broadcast UDP
+    environment:
+      # MQTT Configuration
+      - MQTT_BROKER_HOST=192.168.1.123      # Change to your MQTT broker IP
+      - MQTT_BROKER_PORT=1883
+      - MQTT_BASE_TOPIC=shellies/shellyem3-XXXXXXXXXXXX  # Change to your Shelly device ID
+      - MQTT_KEEPALIVE=60
+      - MQTT_INVERT_POWER=true              # true = positive power means grid consumption
+      # - MQTT_USERNAME=mqtt_user           # Uncomment if auth required
+      # - MQTT_PASSWORD=mqtt_pass           # Uncomment if auth required
+
+      # Speedwire Configuration
+      - SPEEDWIRE_INTERVAL=1.0
+      - SPEEDWIRE_USE_BROADCAST=false
+      - SPEEDWIRE_DUALCAST=false
+      - SPEEDWIRE_PUSH_ON_UPDATE=true       # Send immediately on MQTT update
+      - SPEEDWIRE_MIN_SEND_INTERVAL=0.2     # Min seconds between packets
+      - SPEEDWIRE_HEARTBEAT_INTERVAL=10.0   # Max seconds without sending
+      - SPEEDWIRE_FLIP_IMPORT_EXPORT=false
+      - SPEEDWIRE_SERIAL=1234567890         # Change to unique serial
+      - SPEEDWIRE_SUSY_ID=349
+      - SPEEDWIRE_INCLUDE_VOLTAGE_CURRENT=true
+      - SPEEDWIRE_INCLUDE_SW_VERSION=true   # Include software version in packets
+
+      # Logging
+      - LOG_LEVEL=INFO
+
+    # Option 1: Use environment variables (default)
+    # Option 2: Mount your own config file (uncomment below)
+    # When mounting config file, env vars above are ignored
+    # volumes:
+    #   - ./shelly_speedwire_gateway_config.yaml:/app/shelly_speedwire_gateway_config.yaml:ro
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

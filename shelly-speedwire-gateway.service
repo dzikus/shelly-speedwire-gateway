@@ -1,0 +1,40 @@
+[Unit]
+Description=Shelly EM3 to SMA Speedwire Gateway
+Documentation=https://github.com/dzikus/shelly-speedwire-gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/shelly-speedwire-gateway
+
+# Environment variables (optional)
+Environment="PYTHONUNBUFFERED=1"
+
+# Main service command
+ExecStart=/usr/bin/python3 /opt/shelly-speedwire-gateway/shelly_speedwire_gateway.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Resource limits (optional)
+MemoryLimit=256M
+CPUQuota=50%
+
+# Security hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/shelly-speedwire-gateway
+
+# Logging - systemd will capture stdout/stderr
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shelly-speedwire-gateway
+
+[Install]
+WantedBy=multi-user.target

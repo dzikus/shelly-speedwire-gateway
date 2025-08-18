@@ -176,8 +176,8 @@ class SpeedwireBuilder:
         e_imp = int(round(max(0.0, d.total_consumed_wh) * 3600.0))
         e_exp = int(round(max(0.0, d.total_exported_wh) * 3600.0))
 
-        # SMA uses reversed channel mapping
-        if not flip_import_export:
+        # flip if explicitly requested
+        if flip_import_export:
             p_imp, p_exp = p_exp, p_imp
             e_imp, e_exp = e_exp, e_imp
 
@@ -190,8 +190,7 @@ class SpeedwireBuilder:
         def split(w):
             if w >= 0:
                 return int(round(w * 10.0)), 0
-            else:
-                return 0, int(round(-w * 10.0))
+            return 0, int(round(-w * 10.0))
 
         p1_imp, p1_exp = split(d.power_a)
         p2_imp, p2_exp = split(d.power_b)
@@ -205,7 +204,7 @@ class SpeedwireBuilder:
         e2_exp = int(round(max(0.0, d.energy_exported_b) * 3600.0))
         e3_exp = int(round(max(0.0, d.energy_exported_c) * 3600.0))
 
-        if not flip_import_export:
+        if flip_import_export:
             p1_imp, p1_exp = p1_exp, p1_imp
             p2_imp, p2_exp = p2_exp, p2_imp
             p3_imp, p3_exp = p3_exp, p3_imp
@@ -316,7 +315,7 @@ class SMASpeedwireEmulator:
             # Return first non-loopback IP
             if filtered:
                 return filtered[0]
-        except Exception:
+        except (socket.gaierror, socket.herror, OSError):
             pass
         return "0.0.0.0"
 
@@ -346,7 +345,7 @@ class SMASpeedwireEmulator:
         self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except Exception:
+        except (OSError, AttributeError):
             pass
         self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self.sock_recv.bind(("", self.PORT))
@@ -358,8 +357,16 @@ class SMASpeedwireEmulator:
         except OSError:
             pass
 
+        tx_mode = "broadcast" if self.use_broadcast else "multicast"
+        if self.dualcast:
+            tx_mode += " + broadcast"
+
         logging.info(
-            f"TX: {'broadcast' if self.use_broadcast else 'multicast'}{' + broadcast' if self.dualcast else ''}, SUSy=0x{self.susy_id:04X}, Serial={self.serial}, LocalIP={self.local_ip}"
+            "TX: %s, SUSy=0x%04X, Serial=%d, LocalIP=%s",
+            tx_mode,
+            self.susy_id,
+            self.serial,
+            self.local_ip,
         )
 
     def update_data(self, data: ShellyEM3Data):
@@ -381,9 +388,9 @@ class SMASpeedwireEmulator:
         """Send discovery response to requester"""
         try:
             self.sock_send.sendto(self.DISCOVERY_RESP, (src_addr[0], self.PORT))
-            logging.info(f"Discovery response sent to {src_addr[0]}")
-        except Exception as e:
-            logging.warning(f"Discovery response failed: {e}")
+            logging.debug("Discovery response sent to %s", src_addr[0])
+        except OSError as e:
+            logging.warning("Discovery response failed: %s", e)
             return
 
         if self.use_broadcast or self.dualcast:
@@ -392,8 +399,8 @@ class SMASpeedwireEmulator:
                     self.DISCOVERY_RESP, (self.BROADCAST_IP, self.PORT)
                 )
                 logging.debug("Discovery response broadcast sent")
-            except Exception as be:
-                logging.debug(f"Discovery broadcast skipped: {be}")
+            except OSError as be:
+                logging.debug("Discovery broadcast skipped: %s", be)
 
     async def discovery_loop(self):
         """Handle discovery requests"""
@@ -405,9 +412,11 @@ class SMASpeedwireEmulator:
                     await asyncio.sleep(0.05)
                     continue
                 if self._is_discovery_query(data):
-                    logging.info(f"Discovery request from {addr[0]} len={len(data)}")
+                    logging.debug(
+                        "Discovery request from %s len=%d", addr[0], len(data)
+                    )
                     self._send_discovery_response(addr)
-            except Exception:
+            except OSError:
                 pass
             await asyncio.sleep(0.01)
 
@@ -435,10 +444,10 @@ class SMASpeedwireEmulator:
             for ip in self.unicast_targets:
                 try:
                     self.sock_send.sendto(packet, (ip, self.PORT))
-                except Exception:
+                except OSError:
                     pass
-        except Exception as e:
-            logging.error(f"TX failed: {e}")
+        except OSError as e:
+            logging.error("TX failed: %s", e)
 
     async def tx_loop(self, interval: float):
         """Main transmission loop"""
@@ -469,7 +478,7 @@ class ShellyEM3MQTTClient:
                 client_id=f"speedwire_gateway_{device_id}",
             )
             self.client.on_connect = self._on_connect_v2
-        except Exception:
+        except (AttributeError, TypeError):
             self.client = mqtt.Client(client_id=f"speedwire_gateway_{device_id}")
             self.client.on_connect = self._on_connect_v1
 
@@ -481,32 +490,32 @@ class ShellyEM3MQTTClient:
                 self.config["username"], self.config.get("password", "")
             )
 
-    def _on_connect_v2(self, client, userdata, flags, reason_code, properties):
+    def _on_connect_v2(self, client, _, __, reason_code, ___):
         """MQTT v2 connection callback"""
-        logging.info(f"MQTT connected: {reason_code}")
+        logging.info("MQTT connected: %s", reason_code)
         self._subscribe(client)
 
-    def _on_connect_v1(self, client, userdata, flags, rc):
+    def _on_connect_v1(self, client, _, __, rc):
         """MQTT v1 connection callback"""
-        logging.info(f"MQTT connected (rc={rc})")
+        logging.info("MQTT connected (rc=%d)", rc)
         self._subscribe(client)
 
     def _subscribe(self, client):
         """Subscribe to Shelly topics"""
         emeter_topic = f"{self.base_topic}/emeter/+/+"
         client.subscribe(emeter_topic, qos=1)
-        logging.info(f"Subscribed to {emeter_topic}")
+        logging.info("Subscribed to %s", emeter_topic)
 
         online_topic = f"{self.base_topic}/online"
         client.subscribe(online_topic, qos=1)
 
-    def _on_message(self, client, userdata, msg):
+    def _on_message(self, _, __, msg):
         """Process incoming MQTT messages"""
         topic = msg.topic
         payload = msg.payload.decode("utf-8", errors="ignore")
 
         if topic.endswith("/online"):
-            logging.info(f"Shelly online: {payload}")
+            logging.info("Shelly online: %s", payload)
             return
 
         try:
@@ -567,8 +576,8 @@ class ShellyEM3MQTTClient:
 
                         if self.on_update:
                             self.on_update(self.data)
-            except Exception as e:
-                logging.debug(f"Topic parse error: {e}")
+            except (IndexError, ValueError) as e:
+                logging.debug("Topic parse error: %s", e)
 
     def connect(self):
         """Connect to MQTT broker"""
@@ -584,18 +593,24 @@ class ShellyEM3MQTTClient:
         try:
             self.client.loop_stop()
             self.client.disconnect()
-        except Exception:
+        except (AttributeError, RuntimeError):
             pass
 
-    def _on_disconnect(self, client, userdata, rc, *args):
+    def _on_disconnect(self, _, __, rc, *___):
         """MQTT disconnect callback"""
-        logging.warning(f"MQTT disconnected rc={rc}")
+        if hasattr(rc, 'value'):
+            rc_val = rc.value
+        elif isinstance(rc, int):
+            rc_val = rc
+        else:
+            rc_val = str(rc)
+        logging.warning("MQTT disconnected rc=%s", rc_val)
 
 
 class ShellyEM3SpeedwireGateway:
     """Main gateway application"""
 
-    def __init__(self, config_path: str = "config_speedwire.yaml"):
+    def __init__(self, config_path: str = "shelly_speedwire_gateway_config.yaml"):
         self.config = self._load_config(config_path)
         self._setup_logging()
 
@@ -611,25 +626,19 @@ class ShellyEM3SpeedwireGateway:
 
     def _load_config(self, cfg_path: str) -> dict:
         """Load configuration from YAML file"""
-        p = Path(cfg_path)
+        config_file = Path(cfg_path)
 
-        yaml_path = p.with_suffix(".yaml")
-        yml_path = p.with_suffix(".yml")
-
-        if yaml_path.exists():
-            with open(yaml_path, "r") as f:
-                return yaml.safe_load(f)
-        elif yml_path.exists():
-            with open(yml_path, "r") as f:
+        if config_file.exists():
+            with open(config_file, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f)
         else:
+            # Create default config if doesn't exist
             default = {
                 "mqtt": {
                     "broker_host": "localhost",
                     "broker_port": 1883,
                     "base_topic": "shellies/shellyem3-XXXXXXXXXXXXX",
                     "keepalive": 60,
-                    "invert_power": True,
                 },
                 "speedwire": {
                     "interval": 1.0,
@@ -644,26 +653,25 @@ class ShellyEM3SpeedwireGateway:
                     "serial": 1234567890,
                     "susy_id": 349,
                 },
-                "logging": {"level": "INFO", "file": "speedwire_gateway.log"},
+                "logging": {"level": "INFO"},
             }
 
-            with open(yaml_path, "w") as f:
+            with open(config_file, "w", encoding="utf-8") as f:
                 yaml.dump(default, f, default_flow_style=False, sort_keys=False)
 
-            logging.info(f"Created default config: {yaml_path}")
+            logging.info("Created default config: %s", config_file)
             return default
 
     def _setup_logging(self):
-        """Configure logging"""
+        """Configure logging - outputs only to stdout for systemd/container"""
         cfg = self.config.get("logging", {})
         level = getattr(logging, cfg.get("level", "INFO"))
-        handlers = [logging.StreamHandler()]
-        if "file" in cfg:
-            handlers.append(logging.FileHandler(cfg["file"]))
+
+        # Only console output for systemd journal / container logs
         logging.basicConfig(
             level=level,
             format="%(asctime)s %(levelname)s %(message)s",
-            handlers=handlers,
+            handlers=[logging.StreamHandler()],
         )
         logging.getLogger("paho").setLevel(logging.WARNING)
 
@@ -673,7 +681,7 @@ class ShellyEM3SpeedwireGateway:
         self.last_update = time.time()
         self.count += 1
         if self.count % 10 == 0:
-            logging.info(
+            logging.debug(
                 "Psum=%+6.1f W | L1=%+6.1f W L2=%+6.1f W L3=%+6.1f W | E+=%.3f kWh E-=%.3f kWh",
                 data.total_power,
                 data.power_a,
@@ -687,9 +695,13 @@ class ShellyEM3SpeedwireGateway:
         """Main gateway execution loop"""
         logging.info("=== Shelly EM3 to SMA Speedwire Gateway ===")
         logging.info(
-            f"MQTT: {self.config['mqtt']['broker_host']}:{self.config['mqtt'].get('broker_port',1883)}"
+            "MQTT: %s:%d",
+            self.config["mqtt"]["broker_host"],
+            self.config["mqtt"].get("broker_port", 1883),
         )
-        logging.info(f"TX interval: {self.config['speedwire'].get('interval',1.0)} s")
+        logging.info(
+            "TX interval: %.1f s", self.config["speedwire"].get("interval", 1.0)
+        )
         try:
             self.mqtt.setup()
             self.sw.setup()
@@ -710,12 +722,19 @@ class ShellyEM3SpeedwireGateway:
 
 
 def main():
-    gw = ShellyEM3SpeedwireGateway("config_speedwire.yaml")
+    """Main"""
+    gw = ShellyEM3SpeedwireGateway("shelly_speedwire_gateway_config.yaml")
     try:
         asyncio.run(gw.run())
     except KeyboardInterrupt:
         pass
-    except Exception as e:
+    except (
+        OSError,
+        RuntimeError,
+        yaml.YAMLError,
+        FileNotFoundError,
+        PermissionError,
+    ) as e:
         logging.exception("Fatal error: %s", e)
 
 

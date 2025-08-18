@@ -1,0 +1,45 @@
+# Shelly EM3 to SMA Speedwire Gateway Configuration
+
+mqtt:
+  # MQTT broker connection settings
+  broker_host: 192.168.1.123           # Your MQTT broker IP address
+  broker_port: 1883                    # MQTT broker port (default: 1883)
+  base_topic: shellies/shellyem3-XXXXXXXXXXXX  # Replace with your Shelly EM3 device ID
+  keepalive: 60                        # Connection keepalive interval in seconds
+  invert_power: true                   # Set to true if positive power should mean grid consumption
+  # username: mqtt_user                # Uncomment and set if authentication is required
+  # password: mqtt_pass                # Uncomment and set if authentication is required
+
+speedwire:
+  # Packet transmission settings
+  interval: 1.0                         # Transmission interval in seconds
+
+  # Network transmission mode
+  use_broadcast: false                  # Use broadcast instead of multicast
+  dualcast: false                       # Send both multicast and broadcast packets
+
+  # Direct unicast targets (optional)
+  # Uncomment and add IP addresses of your SMA inverters for direct communication
+  # unicast_targets:
+  #   - 192.168.1.50                   # Example: SMA inverter IP
+  #   - 192.168.1.51                   # Example: Another SMA device
+
+  # Timing options
+  push_on_update: true                 # Send immediately when new MQTT data arrives
+  min_send_interval: 0.2               # Minimum interval between packets in seconds
+  heartbeat_interval: 10.0             # Maximum time without sending a packet
+
+  # Protocol settings
+  flip_import_export: false            # Set to true to reverse import/export mapping
+
+  # Device identification
+  # These values emulate an SMA Energy Meter
+  serial: 1234567890                   # Serial number (change to unique value)
+  susy_id: 349                         # SUSy ID (349 = 0x015D = standard EMETER-20)
+
+  # Data packet content
+  include_voltage_current: true        # Include voltage, current, power factor and frequency
+  include_sw_version: true             # Include emulated software version
+
+logging:
+  level: INFO                          # Logging level: DEBUG, INFO, WARNING, ERROR
