@@ -1,55 +1,97 @@
 {
     "name": "Shelly Speedwire Gateway",
-    "image": "mcr.microsoft.com/devcontainers/python:3.13",
+    "image": "mcr.microsoft.com/devcontainers/python:3.13-bookworm",
     "features": {
-        "ghcr.io/devcontainers-extra/features/black": {
+        "ghcr.io/devcontainers/features/github-cli:1": {
             "version": "latest"
         },
-        "ghcr.io/devcontainers/features/docker-in-docker": {
+        "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+            "packages": "curl,wget,git,jq,build-essential,ripgrep,fd-find,mosquitto-clients"
+        },
+        "ghcr.io/va-h/devcontainers-features/uv:1": {
+            "shellAutocompletion": true,
             "version": "latest"
         },
-        "ghcr.io/devcontainers/features/github-cli": {
+        "ghcr.io/devcontainers-extra/features/ruff:1": {
             "version": "latest"
-        }
+        },
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "lts"
+        },
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {
+            "dockerDashComposeVersion": "v2"
+        },
+        "ghcr.io/devcontainers-extra/features/pre-commit:2": {}
     },
     "forwardPorts": [
-        9522
+        9522,
+        8080
     ],
+    "portsAttributes": {
+        "9522": {
+            "label": "Speedwire UDP"
+        }
+    },
     "customizations": {
         "vscode": {
             "extensions": [
                 "ms-python.python",
                 "ms-python.vscode-pylance",
-                "ms-python.black-formatter",
                 "ms-python.pylint",
                 "ms-python.debugpy",
+                "ms-python.autopep8",
                 "redhat.vscode-yaml",
-                "ms-azuretools.vscode-docker"
+                "ms-azuretools.vscode-docker",
+                "charliermarsh.ruff",
+                "eamodio.gitlens",
+                "tamasfe.even-better-toml",
+                "ms-toolsai.jupyter",
+                "yzhang.markdown-all-in-one"
             ],
             "settings": {
                 "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "python.analysis.typeCheckingMode": "basic",
+                "python.analysis.autoSearchPaths": true,
+                "[python]": {
+                    "editor.defaultFormatter": "charliermarsh.ruff",
+                    "editor.codeActionsOnSave": {
+                        "source.organizeImports.ruff": "explicit",
+                        "source.fixAll.ruff": "explicit"
+                    }
+                },
                 "python.linting.enabled": true,
                 "python.linting.pylintEnabled": true,
-                "python.formatting.provider": "black",
+                "python.linting.pylintPath": "/usr/local/bin/pylint",
                 "files.trimTrailingWhitespace": true,
                 "files.insertFinalNewline": true,
-                "[python]": {
-                    "editor.defaultFormatter": "ms-python.black-formatter"
-                }
+                "terminal.integrated.defaultProfile.linux": "bash"
             }
         }
     },
-    "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt",
     "containerEnv": {
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
-        "TZ": "Europe/Warsaw"
+        "PYTHONOPTIMIZE": "2",
+        "PYTHONGC": "1",
+        "PYTHONPATH": "${containerWorkspaceFolder}",
+        "UV_CACHE_DIR": "${containerWorkspaceFolder}/.cache/uv",
+        "UV_LINK_MODE": "copy",
+        "UV_COMPILE_BYTECODE": "1",
+        "UV_SYSTEM_PYTHON": "1",
+        "UV_NO_SYNC": "0",
+        "TZ": "Europe/Warsaw",
+        "MQTT_BROKER_HOST": "localhost",
+        "MQTT_BASE_TOPIC": "shellies/shellyem3-devcontainer",
+        "LOG_LEVEL": "DEBUG"
     },
     "workspaceFolder": "/workspace",
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
     "remoteUser": "vscode",
-    "updateContentCommand": "pip install -r requirements.txt",
+    "postCreateCommand": "uv sync --dev --all-extras",
+    "postStartCommand": "uv run pre-commit install -f",
     "runArgs": [
-        "--network=host"
+        "--network=host",
+        "--init",
+        "--rm"
     ]
 }
