@@ -1,5 +1,5 @@
 [Unit]
-Description=Shelly EM3 to SMA Speedwire Gateway
+Description=Shelly 3EM to SMA Speedwire Gateway
 Documentation=https://github.com/dzikus/shelly-speedwire-gateway
 After=network-online.target
 Wants=network-online.target
@@ -14,7 +14,7 @@ WorkingDirectory=/opt/shelly-speedwire-gateway
 Environment="PYTHONUNBUFFERED=1"
 
 # Main service command
-ExecStart=/usr/bin/python3 /opt/shelly-speedwire-gateway/shelly_speedwire_gateway.py
+ExecStart=/usr/bin/python3 /opt/shelly-speedwire-gateway/run_gateway.py
 
 # Restart policy
 Restart=always
@@ -24,7 +24,7 @@ RestartSec=10
 MemoryLimit=256M
 CPUQuota=50%
 
-# Security hardening (optional but recommended)
+# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

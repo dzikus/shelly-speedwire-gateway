@@ -1,89 +1,186 @@
-FROM python:3.13-slim
+# Use Alpine for smaller image size
+FROM python:3.13-alpine AS builder
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONOPTIMIZE=2 \
+    UV_CACHE_DIR=/tmp/uv-cache
+
+# Install uv for fast dependency management
+RUN pip install uv
+
+RUN apk add --no-cache \
+        build-base \
+        gcc \
+        g++ \
+        musl-dev \
+        linux-headers
+
+# Create virtual environment with uv
+RUN uv venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-COPY requirements.txt shelly_speedwire_gateway.py ./
+# Copy project files needed for installation
+COPY pyproject.toml setup.py README.md ./
+COPY shelly_speedwire_gateway/ ./shelly_speedwire_gateway/
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends procps && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd -m -u 1000 -s /bin/bash gateway && \
-    pip install --no-cache-dir -r requirements.txt && \
-    rm -f requirements.txt && \
-    printf '#!/bin/sh\n\
-set -e\n\
+# Install dependencies with uv (much faster than pip)
+# Include monitoring dependencies for production use
+RUN uv pip install -e .[monitoring] && \
+    uv pip install setuptools && \
+    rm -rf /tmp/uv-cache
+
+# Build Cython extensions
+RUN python setup.py build_ext --inplace
+
+# Compile Python bytecode
+RUN python -m compileall shelly_speedwire_gateway/
+
+# Clean up Cython build artifacts but keep .so files
+RUN find . -name "*.c" -delete && \
+    find . -name "*.html" -delete && \
+    rm -rf build/
+
+FROM python:3.13-alpine AS production
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONOPTIMIZE=2 \
+    PYTHONGC=1
+
+RUN apk add --no-cache \
+        tini \
+        procps \
+        && \
+    adduser -D -u 1000 -s /bin/sh gateway
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+
+COPY --from=builder /app/shelly_speedwire_gateway/ ./shelly_speedwire_gateway/
+COPY scripts/run_gateway.py ./scripts/run_gateway.py
+
+RUN printf '#!/bin/bash\n\
+set -euo pipefail\n\
 \n\
-# Check if config file already exists (e.g., mounted via volume)\n\
-if [ -f /app/shelly_speedwire_gateway_config.yaml ]; then\n\
-    echo "Using existing config file"\n\
-else\n\
-    echo "Generating config from environment variables"\n\
-    cat > /app/shelly_speedwire_gateway_config.yaml << EOL\n\
-# Auto-generated configuration from environment variables\n\
-mqtt:\n\
-  broker_host: ${MQTT_BROKER_HOST}\n\
-  broker_port: ${MQTT_BROKER_PORT}\n\
-  base_topic: ${MQTT_BASE_TOPIC}\n\
-  keepalive: ${MQTT_KEEPALIVE}\n\
-$([ -n "$MQTT_USERNAME" ] && echo "  username: ${MQTT_USERNAME}")\n\
-$([ -n "$MQTT_PASSWORD" ] && echo "  password: ${MQTT_PASSWORD}")\n\
+# Function to generate config from environment\n\
+generate_config() {\n\
+    python3 -c "\n\
+import os\n\
+import yaml\n\
 \n\
-speedwire:\n\
-  interval: ${SPEEDWIRE_INTERVAL}\n\
-  use_broadcast: ${SPEEDWIRE_USE_BROADCAST}\n\
-  dualcast: ${SPEEDWIRE_DUALCAST}\n\
-  push_on_update: ${SPEEDWIRE_PUSH_ON_UPDATE}\n\
-  min_send_interval: ${SPEEDWIRE_MIN_SEND_INTERVAL}\n\
-  heartbeat_interval: ${SPEEDWIRE_HEARTBEAT_INTERVAL}\n\
-  flip_import_export: ${SPEEDWIRE_FLIP_IMPORT_EXPORT}\n\
-  serial: ${SPEEDWIRE_SERIAL}\n\
-  susy_id: ${SPEEDWIRE_SUSY_ID}\n\
-  include_voltage_current: ${SPEEDWIRE_INCLUDE_VOLTAGE_CURRENT}\n\
-  include_sw_version: ${SPEEDWIRE_INCLUDE_SW_VERSION}\n\
+config = {\n\
+    \"mqtt\": {\n\
+        \"broker_host\": os.getenv(\"MQTT_BROKER_HOST\", \"localhost\"),\n\
+        \"broker_port\": int(os.getenv(\"MQTT_BROKER_PORT\", \"1883\")),\n\
+        \"base_topic\": os.getenv(\"MQTT_BASE_TOPIC\", \"shellies/shellyem3-XXXXXXXXXXXX\"),\n\
+        \"keepalive\": int(os.getenv(\"MQTT_KEEPALIVE\", \"60\")),\n\
+        \"invert_values\": os.getenv(\"MQTT_INVERT_VALUES\", \"false\").lower() == \"true\",\n\
+        \"qos\": int(os.getenv(\"MQTT_QOS\", \"1\"))\n\
+    },\n\
+    \"speedwire\": {\n\
+        \"interval\": float(os.getenv(\"SPEEDWIRE_INTERVAL\", \"1.0\")),\n\
+        \"use_broadcast\": os.getenv(\"SPEEDWIRE_USE_BROADCAST\", \"false\").lower() == \"true\",\n\
+        \"dualcast\": os.getenv(\"SPEEDWIRE_DUALCAST\", \"false\").lower() == \"true\",\n\
+        \"serial\": int(os.getenv(\"SPEEDWIRE_SERIAL\", \"1234567890\")),\n\
+        \"susy_id\": int(os.getenv(\"SPEEDWIRE_SUSY_ID\", \"349\")),\n\
+        \"unicast_targets\": []\n\
+    },\n\
+    \"log_level\": os.getenv(\"LOG_LEVEL\", \"INFO\"),\n\
+    \"log_format\": os.getenv(\"LOG_FORMAT\", \"structured\"),\n\
+    \"enable_monitoring\": os.getenv(\"ENABLE_MONITORING\", \"false\").lower() == \"true\",\n\
+    \"metrics_port\": int(os.getenv(\"METRICS_PORT\", \"8080\"))\n\
+}\n\
 \n\
-logging:\n\
-  level: ${LOG_LEVEL}\n\
-EOL\n\
-fi\n\
+# Add optional MQTT authentication\n\
+if os.getenv(\"MQTT_USERNAME\"):\n\
+    config[\"mqtt\"][\"username\"] = os.getenv(\"MQTT_USERNAME\")\n\
+if os.getenv(\"MQTT_PASSWORD\"):\n\
+    config[\"mqtt\"][\"password\"] = os.getenv(\"MQTT_PASSWORD\")\n\
 \n\
-# Run the application\n\
-exec python3 /app/shelly_speedwire_gateway.py\n' \
-    > /usr/local/bin/docker-entrypoint.sh && \
-    chmod 755 /usr/local/bin/docker-entrypoint.sh && \
-    chmod 644 /app/shelly_speedwire_gateway.py && \
-    chown gateway:gateway /app && \
-    chmod 755 /app && \
-    chown root:root /app/shelly_speedwire_gateway.py
+# Add unicast targets if specified\n\
+if os.getenv(\"SPEEDWIRE_UNICAST_TARGETS\"):\n\
+    targets = os.getenv(\"SPEEDWIRE_UNICAST_TARGETS\").split(\",\")\n\
+    config[\"speedwire\"][\"unicast_targets\"] = [t.strip() for t in targets if t.strip()]\n\
+\n\
+# Write YAML config\n\
+with open(\"/app/shelly_speedwire_gateway_config.yaml\", \"w\", encoding=\"utf-8\") as f:\n\
+    yaml.dump(config, f, default_flow_style=False, sort_keys=False)\n\
+"\n\
+}\n\
+\n\
+# Main execution\n\
+main() {\n\
+    echo "Starting Shelly 3EM to SMA Speedwire Gateway v2.0.0"\n\
+    \n\
+    # Check if config file exists (mounted via volume)\n\
+    if [ -f "/app/shelly_speedwire_gateway_config.yaml" ] && [ "${USE_ENV_CONFIG:-false}" != "true" ]; then\n\
+        echo "Using existing configuration file"\n\
+    else\n\
+        echo "Generating configuration from environment variables"\n\
+        generate_config\n\
+    fi\n\
+    \n\
+    # Validate required environment variables\n\
+    if [ "${MQTT_BASE_TOPIC:-}" = "shellies/shellyem3-XXXXXXXXXXXX" ]; then\n\
+        echo "WARNING: Using default MQTT base topic. Please set MQTT_BASE_TOPIC environment variable."\n\
+    fi\n\
+    \n\
+    if [ "${SPEEDWIRE_SERIAL:-1234567890}" = "1234567890" ]; then\n\
+        echo "WARNING: Using default Speedwire serial number. Please set SPEEDWIRE_SERIAL to a unique value."\n\
+    fi\n\
+    \n\
+    # Start the gateway\n\
+    echo "Configuration loaded, starting gateway..."\n\
+    exec python /app/scripts/run_gateway.py "$@"\n\
+}\n\
+\n\
+# Handle signals properly\n\
+trap "echo \"Received signal, shutting down...\"; exit 0" TERM INT\n\
+\n\
+# Run main function\n\
+main "$@"\n' > /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
+
+RUN chown -R gateway:gateway /app /opt/venv
 
 USER gateway
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+ENV MQTT_BROKER_HOST=localhost \
+    MQTT_BROKER_PORT=1883 \
+    MQTT_BASE_TOPIC=shellies/shellyem3-XXXXXXXXXXXX \
+    MQTT_KEEPALIVE=60 \
+    MQTT_INVERT_VALUES=false \
+    MQTT_QOS=1 \
+    SPEEDWIRE_INTERVAL=1.0 \
+    SPEEDWIRE_USE_BROADCAST=false \
+    SPEEDWIRE_DUALCAST=false \
+    SPEEDWIRE_SERIAL=1234567890 \
+    SPEEDWIRE_SUSY_ID=349 \
+    LOG_LEVEL=INFO \
+    LOG_FORMAT=structured \
+    ENABLE_MONITORING=false \
+    METRICS_PORT=8080
 
-ENV MQTT_BROKER_HOST=localhost
-ENV MQTT_BROKER_PORT=1883
-ENV MQTT_BASE_TOPIC=shellies/shellyem3-XXXXXXXXXXXX
-ENV MQTT_KEEPALIVE=60
-ENV MQTT_USERNAME=""
-ENV MQTT_PASSWORD=""
+EXPOSE 9522/udp 8080/tcp
 
-ENV SPEEDWIRE_INTERVAL=1.0
-ENV SPEEDWIRE_USE_BROADCAST=false
-ENV SPEEDWIRE_DUALCAST=false
-ENV SPEEDWIRE_PUSH_ON_UPDATE=true
-ENV SPEEDWIRE_MIN_SEND_INTERVAL=0.2
-ENV SPEEDWIRE_HEARTBEAT_INTERVAL=10.0
-ENV SPEEDWIRE_FLIP_IMPORT_EXPORT=false
-ENV SPEEDWIRE_SERIAL=1234567890
-ENV SPEEDWIRE_SUSY_ID=349
-ENV SPEEDWIRE_INCLUDE_VOLTAGE_CURRENT=true
-ENV SPEEDWIRE_INCLUDE_SW_VERSION=true
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD pgrep -f "run_gateway.py" > /dev/null || exit 1
 
-ENV LOG_LEVEL=INFO
+LABEL maintainer="Grzegorz Sterniczuk <grzegorz@sternicz.uk>" \
+      version="2.0.0" \
+      description="Shelly 3EM to SMA Speedwire Gateway" \
+      org.opencontainers.image.title="Shelly Speedwire Gateway" \
+      org.opencontainers.image.description="Gateway between Shelly 3EM energy meters and SMA Speedwire protocol" \
+      org.opencontainers.image.version="2.0.0" \
+      org.opencontainers.image.authors="Grzegorz Sterniczuk" \
+      org.opencontainers.image.source="https://github.com/dzikus/shelly-speedwire-gateway" \
+      org.opencontainers.image.licenses="MIT"
 
-EXPOSE 9522/udp
-
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD pgrep -f shelly_speedwire_gateway.py || exit 1
-
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+CMD []

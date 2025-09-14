@@ -1,44 +1,73 @@
-# Shelly EM3 to SMA Speedwire Gateway Configuration
+# Shelly 3EM to SMA Speedwire Gateway Configuration
 
+# MQTT broker settings
 mqtt:
-  # MQTT broker connection settings
-  broker_host: 192.168.1.123           # Your MQTT broker IP address
-  broker_port: 1883                    # MQTT broker port (default: 1883)
-  base_topic: shellies/shellyem3-XXXXXXXXXXXX  # Replace with your Shelly EM3 device ID
-  keepalive: 60                        # Connection keepalive interval in seconds
-  # username: mqtt_user                # Uncomment and set if authentication is required
-  # password: mqtt_pass                # Uncomment and set if authentication is required
+  broker_host: 172.28.10.20           # MQTT broker hostname
+  broker_port: 1883                   # MQTT broker port
+  base_topic: "shellies/shellyem3-ECFABCC7EEB7"  # Base topic (replace with your device ID)
+  keepalive: 60                       # MQTT keepalive interval in seconds
+  invert_values: true                 # Invert power/energy values
+  qos: 1                              # MQTT Quality of Service (0, 1, or 2)
+  # username: your_mqtt_username      # Uncomment if authentication required
+  # password: your_mqtt_password      # Uncomment if authentication required
 
+  # Advanced connection settings
+  max_reconnect_attempts: 3           # Maximum reconnection attempts
+  connection_timeout: 10.0            # Connection timeout in seconds
+  message_timeout: 300                # Message timeout in seconds
+
+# SMA Speedwire protocol settings
 speedwire:
-  # Packet transmission settings
-  interval: 1.0                         # Transmission interval in seconds
-
-  # Network transmission mode
-  use_broadcast: false                  # Use broadcast instead of multicast
-  dualcast: false                       # Send both multicast and broadcast packets
-
-  # Direct unicast targets (optional)
-  # Uncomment and add IP addresses of your SMA inverters for direct communication
+  interval: 1.0                       # Transmission interval in seconds
+  use_broadcast: false                # Use broadcast instead of multicast
+  dualcast: false                     # Send both multicast and broadcast
+  serial: 1234567890                  # SMA device serial number (change to unique value)
+  susy_id: 349                        # SMA SUSy ID
+  unicast_targets: []                 # List of specific IP addresses for unicast
   # unicast_targets:
-  #   - 192.168.1.50                   # Example: SMA inverter IP
-  #   - 192.168.1.51                   # Example: Another SMA device
+  #   - "192.168.1.100"
+  #   - "192.168.1.101"
 
-  # Timing options
-  push_on_update: true                 # Send immediately when new MQTT data arrives
-  min_send_interval: 0.2               # Minimum interval between packets in seconds
-  heartbeat_interval: 10.0             # Maximum time without sending a packet
+  # Timing settings
+  min_send_interval: 0.2              # Minimum send interval
+  heartbeat_interval: 10.0            # Heartbeat interval
+  discovery_loop_sleep: 0.01          # Discovery loop sleep
+  data_receive_timeout: 0.05          # Data receive timeout
+  health_check_timeout: 300           # Health check timeout
+  health_check_interval: 5.0          # Health check interval
 
-  # Protocol settings
-  flip_import_export: false            # Set to true to reverse import/export mapping
+  # Network settings
+  receive_buffer_size: 2048           # Receive buffer size
+  max_packet_size: 1024               # Maximum packet size
+  min_packet_size: 20                 # Minimum packet size
+  max_retries: 3                      # Maximum retry attempts
+  backoff_factor: 0.3                 # Backoff factor for retries
+  connection_pool_size: 30            # Connection pool size
 
-  # Device identification
-  # These values emulate an SMA Energy Meter
-  serial: 1234567890                   # Serial number (change to unique value)
-  susy_id: 349                         # SUSy ID (349 = 0x015D = standard EMETER-20)
+# Application settings
+log_level: "DEBUG"                     # DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_format: "structured"              # console, json, structured
+enable_jit: true                      # Enable JIT compilation
+enable_monitoring: false              # Enable Prometheus metrics
+metrics_port: 8080                    # Port for metrics endpoint
 
-  # Data packet content
-  include_voltage_current: true        # Include voltage, current, power factor and frequency
-  include_sw_version: true             # Include emulated software version
+# Performance settings
+lru_cache_size: 200                   # LRU cache size
+batch_size: 50                        # Batch processing size
+batch_flush_interval: 0.05            # Batch flush interval
+max_queue_size: 10000                 # Maximum queue size
 
-logging:
-  level: INFO                          # Logging level: DEBUG, INFO, WARNING, ERROR
+# Physical limits
+max_voltage: 300.0                    # Maximum voltage limit
+max_current: 100.0                    # Maximum current limit
+max_power: 50000.0                    # Maximum power limit
+min_frequency: 45.0                   # Minimum frequency limit
+max_frequency: 65.0                   # Maximum frequency limit
+default_frequency: 50.0               # Default frequency
+min_power_factor_threshold: 0.01      # Minimum power factor threshold
+
+# Device configuration
+default_sw_version: [2, 3, 4, "R"]   # Default software version
+
+# Logging settings
+mqtt_log_level: "WARNING"             # MQTT specific log level

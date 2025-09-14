@@ -1,0 +1,483 @@
+> """Pydantic v2 data models for Shelly 3EM to SMA Speedwire Gateway.
+
+> This module implements data models
+> with validation, serialization, and type safety.
+> """
+
+> from __future__ import annotations
+
+> import socket
+> import time
+> from typing import Annotated
+
+> from pydantic import (
+>     BaseModel,
+>     ConfigDict,
+>     Field,
+>     computed_field,
+>     field_serializer,
+>     field_validator,
+>     model_validator,
+> )
+> from pydantic.types import PositiveFloat, PositiveInt
+> from pydantic_settings import BaseSettings, SettingsConfigDict
+
+> from shelly_speedwire_gateway.constants import (
+>     DEFAULT_IPV4_ADDR,
+>     DEFAULT_SERIAL,
+>     DEFAULT_SUSY_ID,
+>     PHASE_B_NUM,
+>     SOFTWARE_VERSION_COMPONENTS,
+>     VALID_POWER_FACTOR_RANGE,
+> )
+
+  # Type aliases for better clarity
+> PowerRange = Annotated[float, Field(ge=-50000.0, le=50000.0)]
+> VoltageRange = Annotated[float, Field(ge=0, le=300.0)]
+> CurrentRange = Annotated[float, Field(ge=0, le=100.0)]
+> PowerFactorRange = Annotated[float, Field(ge=-1.0, le=1.0)]
+> FrequencyRange = Annotated[float, Field(ge=45.0, le=65.0)]
+> PortRange = Annotated[int, Field(ge=1, le=65535)]
+
+
+> class PhaseData(BaseModel):
+>     """Pydantic model for single electrical phase data."""
+
+>     model_config = ConfigDict(
+>         frozen=True,
+>         str_strip_whitespace=True,
+>         extra="ignore",
+          # Config settings
+>         validate_assignment=False,
+>         arbitrary_types_allowed=False,
+>         use_enum_values=True,
+>     )
+
+>     power: PowerRange = Field(
+>         default=0.0,
+>         description="Instantaneous power in Watts (positive=import, negative=export)",
+>     )
+>     voltage: VoltageRange = Field(default=0.0, description="RMS voltage in Volts")
+>     current: CurrentRange = Field(default=0.0, description="RMS current in Amperes")
+>     pf: PowerFactorRange = Field(
+>         default=1.0,
+>         description="Power factor (-1.0 to 1.0, where 1.0=unity)",
+>     )
+>     energy_consumed: Annotated[float, Field(ge=0)] = Field(
+>         default=0.0,
+>         description="Total energy consumed from grid in Wh",
+>     )
+>     energy_exported: Annotated[float, Field(ge=0)] = Field(
+>         default=0.0,
+>         description="Total energy exported to grid in Wh",
+>     )
+
+>     @field_validator("pf")
+>     @classmethod
+>     def validate_power_factor(cls, v: float) -> float:
+>         """Validate power factor is within electrical engineering limits."""
+>         if not VALID_POWER_FACTOR_RANGE[0] <= v <= VALID_POWER_FACTOR_RANGE[1]:
+!             raise ValueError(f"Power factor must be between -1.0 and 1.0, got {v}")
+>         return v
+
+>     @model_validator(mode="after")
+>     def validate_electrical_consistency(self) -> PhaseData:
+>         """Validate electrical consistency between power, voltage, current, and PF."""
+>         if self.voltage > 0 and self.current > 0:
+!             calculated_apparent = self.voltage * self.current
+!             calculated_active = calculated_apparent * abs(self.pf)
+
+!             if abs(self.power) > 0 and abs(abs(self.power) - calculated_active) > (calculated_active * 0.05):
+!                 pass  # Log warning but don't fail validation for real-world data
+
+>         return self
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def apparent_power(self) -> float:
+>         """Calculate apparent power (VA) from voltage and current."""
+>         return self.voltage * self.current
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def reactive_power(self) -> float:
+>         """Calculate reactive power (VAr) from apparent power and power factor."""
+!         if self.apparent_power == 0:
+!             return 0.0
+!         return float(self.apparent_power * (1.0 - self.pf * self.pf) ** 0.5)
+
+>     @field_serializer("power", "voltage", "current", "energy_consumed", "energy_exported")
+>     def serialize_measurements(self, value: float) -> float:
+>         """Round measurements to 3 decimal places for JSON serialization."""
+!         return round(value, 3)
+
+>     @field_serializer("pf")
+>     def serialize_power_factor(self, value: float) -> float:
+>         """Round power factor to 4 decimal places."""
+!         return round(value, 4)
+
+
+> class Shelly3EMData(BaseModel):
+>     """Pydantic model for three-phase energy meter data with validation and computed fields."""
+
+>     model_config = ConfigDict(
+>         str_strip_whitespace=True,
+>         extra="ignore",
+          # Config settings
+>         validate_assignment=False,
+>         arbitrary_types_allowed=False,
+>         use_enum_values=True,
+>     )
+
+>     a: PhaseData = Field(default_factory=PhaseData, description="Phase A data")
+>     b: PhaseData = Field(default_factory=PhaseData, description="Phase B data")
+>     c: PhaseData = Field(default_factory=PhaseData, description="Phase C data")
+>     freq_hz: FrequencyRange = Field(default=50.0, description="Grid frequency in Hz")
+>     timestamp: float = Field(default_factory=time.time, description="Unix timestamp of measurement")
+>     device_id: str | None = Field(default=None, description="Device identifier")
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def total_power(self) -> float:
+>         """Total instantaneous power across all phases."""
+!         return self.a.power + self.b.power + self.c.power
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def total_consumed_wh(self) -> float:
+>         """Total energy consumed from grid across all phases."""
+!         return self.a.energy_consumed + self.b.energy_consumed + self.c.energy_consumed
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def total_exported_wh(self) -> float:
+>         """Total energy exported to grid across all phases."""
+!         return self.a.energy_exported + self.b.energy_exported + self.c.energy_exported
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def total_apparent_power(self) -> float:
+>         """Total apparent power across all phases."""
+>         return self.a.apparent_power + self.b.apparent_power + self.c.apparent_power
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def total_reactive_power(self) -> float:
+>         """Total reactive power across all phases."""
+!         return self.a.reactive_power + self.b.reactive_power + self.c.reactive_power
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def average_power_factor(self) -> float:
+>         """Calculate weighted average power factor across all phases."""
+>         if self.total_apparent_power == 0:
+>             return 1.0
+!         return self.total_power / self.total_apparent_power
+
+>     def get_phase(self, phase_num: int) -> PhaseData:
+>         """Get phase data by number with pattern matching."""
+!         if phase_num == 0:
+!             return self.a
+!         if phase_num == 1:
+!             return self.b
+!         if phase_num == PHASE_B_NUM:  # PLR2004: Use constant
+!             return self.c
+!         return PhaseData()
+
+>     def get_phases_list(self) -> list[PhaseData]:
+>         """Get all phases as a list for iteration."""
+!         return [self.a, self.b, self.c]
+
+
+> class NetworkConfig(BaseModel):
+>     """Network configuration with IP address validation."""
+
+>     model_config = ConfigDict(
+>         frozen=True,
+>         str_strip_whitespace=True,
+>         extra="forbid",
+>     )
+
+>     use_broadcast: bool = Field(default=False, description="Use broadcast instead of multicast")
+>     dualcast: bool = Field(default=False, description="Send both multicast and broadcast packets")
+>     local_ip: Annotated[str, Field(pattern=r"^(?:\d{1,3}\.){3}\d{1,3}$|^127\.0\.0\.1$")] = (
+>         Field(  # S104: Allow localhost
+>             default=DEFAULT_IPV4_ADDR,
+>             description="Local IP address for multicast interface binding",
+>         )
+>     )
+>     unicast_targets: list[Annotated[str, Field(pattern=r"^(?:\d{1,3}\.){3}\d{1,3}$")]] = Field(
+>         default_factory=list,
+>         description="List of specific IP addresses for unicast transmission",
+>     )
+
+>     @field_validator("local_ip", "unicast_targets")
+>     @classmethod
+>     def validate_ip_addresses(cls, v: str | list[str]) -> str | list[str]:
+>         """Validate IP address format using socket module."""
+!         if isinstance(v, list):
+!             for ip in v:
+!                 try:
+!                     socket.inet_aton(ip)
+!                 except OSError as exc:
+!                     raise ValueError(f"Invalid IP address: {ip}") from exc
+!         elif v != DEFAULT_IPV4_ADDR:  # S104: Allow localhost
+!             try:
+!                 socket.inet_aton(v)
+!             except OSError as exc:
+!                 raise ValueError(f"Invalid IP address: {v}") from exc
+!         return v
+
+
+> class DeviceConfig(BaseModel):
+>     """SMA device configuration with validation."""
+
+>     model_config = ConfigDict(
+>         frozen=True,
+>         extra="forbid",
+>     )
+
+>     susy_id: Annotated[int, Field(ge=0, le=0xFFFF)] = Field(
+>         default=DEFAULT_SUSY_ID,
+>         description="SMA SUSy ID (16-bit identifier)",
+>     )
+>     serial: Annotated[int, Field(ge=0, le=0xFFFFFFFF)] = Field(
+>         default=DEFAULT_SERIAL,
+>         description="Device serial number (32-bit identifier)",
+>     )
+>     software_version: tuple[int, int, int, str] = Field(
+>         default=(2, 3, 4, "R"),
+>         description="Software version (major, minor, build, revision)",
+>     )
+
+>     @field_validator("software_version")
+>     @classmethod
+>     def validate_software_version(cls, v: tuple[int, int, int, str]) -> tuple[int, int, int, str]:
+>         """Validate software version format."""
+!         if len(v) != SOFTWARE_VERSION_COMPONENTS:  # PLR2004: Use constant
+!             raise ValueError("Software version must have 4 components")
+
+!         major, minor, build, rev = v
+!         if not all(isinstance(x, int) for x in [major, minor, build]):
+!             raise ValueError("First three version components must be integers")
+
+!         if not isinstance(rev, str) or len(rev) != 1:
+!             raise ValueError("Revision must be a single character")
+
+!         return v
+
+
+> class MQTTConnectionState(BaseModel):
+>     """MQTT connection state tracking."""
+
+>     model_config = ConfigDict(
+>         extra="forbid",
+>     )
+
+>     connected: bool = False
+>     reconnect_attempts: Annotated[int, Field(ge=0)] = 0
+>     last_message_time: float = Field(default_factory=time.time)
+>     shutdown_requested: bool = False
+>     connection_start_time: float = Field(default_factory=time.time)
+>     total_messages_received: Annotated[int, Field(ge=0)] = 0
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def time_since_last_message(self) -> float:
+>         """Time elapsed since last MQTT message."""
+!         return time.time() - self.last_message_time
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def connection_duration(self) -> float:
+>         """Total connection duration if connected."""
+!         return time.time() - self.connection_start_time if self.connected else 0.0
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def messages_per_second(self) -> float:
+>         """Average messages per second since connection start."""
+!         duration = self.connection_duration
+!         return self.total_messages_received / duration if duration > 0 else 0.0
+
+>     def reset_connection(self) -> None:
+>         """Reset connection state for new attempt."""
+!         self.connected = False
+!         self.reconnect_attempts = 0
+!         self.connection_start_time = time.time()
+
+>     def mark_connected(self) -> None:
+>         """Mark connection as successful."""
+!         self.connected = True
+!         self.reconnect_attempts = 0
+!         self.connection_start_time = time.time()
+
+>     def update_last_message_time(self) -> None:
+>         """Update last message timestamp and increment counter."""
+!         self.total_messages_received += 1
+!         self.last_message_time = time.time()
+
+
+> class MQTTSettings(BaseSettings):
+>     """MQTT configuration using Pydantic Settings with environment variable support."""
+
+>     model_config = SettingsConfigDict(
+>         env_file=(".env", ".env.local", ".env.prod"),
+>         env_prefix="MQTT_",
+>         env_nested_delimiter="__",
+>         case_sensitive=False,
+>         extra="ignore",
+>     )
+
+>     broker_host: str = Field(default="localhost", description="MQTT broker hostname")
+>     broker_port: PortRange = Field(default=1883, description="MQTT broker port")
+>     base_topic: str = Field(
+>         description="Base MQTT topic for device",
+>         pattern=r"^[a-zA-Z0-9_/-]+$",
+>         default="shellies/shelly3em-XXXXXXXXXXXXX",
+>     )
+>     username: str | None = Field(default=None, description="MQTT username")
+>     password: str | None = Field(default=None, description="MQTT password", repr=False)
+>     keepalive: PositiveInt = Field(default=60, description="MQTT keepalive interval in seconds")
+>     invert_values: bool = Field(default=False, description="Invert power/energy values")
+>     qos: Annotated[int, Field(ge=0, le=2)] = Field(default=1, description="MQTT Quality of Service level")
+
+      # Connection settings
+>     max_reconnect_attempts: PositiveInt = Field(default=3, description="Maximum MQTT reconnection attempts")
+>     connection_timeout: PositiveFloat = Field(default=10.0, description="MQTT connection timeout in seconds")
+>     message_timeout: PositiveInt = Field(default=300, description="Message timeout in seconds")
+>     backoff_factor: PositiveFloat = Field(default=0.3, description="Backoff factor for reconnection attempts")
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def device_id(self) -> str:
+>         """Extract device ID from base topic."""
+!         return self.base_topic.rsplit("-", maxsplit=1)[-1] if "-" in self.base_topic else "default"
+
+>     @computed_field  # type: ignore[prop-decorator]
+>     @property
+>     def connection_url(self) -> str:
+>         """Build MQTT connection URL."""
+!         if self.username and self.password:
+!             return f"mqtt://{self.username}:{self.password}@{self.broker_host}:{self.broker_port}"
+!         return f"mqtt://{self.broker_host}:{self.broker_port}"
+
+
+> class SpeedwireSettings(BaseSettings):
+>     """Speedwire configuration with environment support."""
+
+>     model_config = SettingsConfigDict(
+>         env_file=(".env", ".env.local", ".env.prod"),
+>         env_prefix="SPEEDWIRE_",
+>         env_nested_delimiter="__",
+>         case_sensitive=False,
+>         extra="ignore",
+>     )
+
+>     interval: PositiveFloat = Field(default=1.0, description="Transmission interval in seconds")
+>     use_broadcast: bool = Field(default=False, description="Use broadcast transmission")
+>     dualcast: bool = Field(default=False, description="Use both multicast and broadcast")
+>     serial: Annotated[int, Field(ge=0, le=0xFFFFFFFF)] = Field(
+>         default=DEFAULT_SERIAL,
+>         description="SMA device serial number",
+>     )
+>     susy_id: Annotated[int, Field(ge=0, le=0xFFFF)] = Field(default=DEFAULT_SUSY_ID, description="SMA SUSy ID")
+>     unicast_targets: list[str] = Field(default_factory=list, description="Unicast target IP addresses")
+
+      # Timing settings
+>     min_send_interval: PositiveFloat = Field(default=0.2, description="Minimum send interval in seconds")
+>     heartbeat_interval: PositiveFloat = Field(default=10.0, description="Heartbeat interval in seconds")
+>     discovery_loop_sleep: PositiveFloat = Field(default=0.01, description="Discovery loop sleep time")
+>     data_receive_timeout: PositiveFloat = Field(default=0.05, description="Data receive timeout")
+>     health_check_timeout: PositiveInt = Field(default=300, description="Health check timeout in seconds")
+>     health_check_interval: PositiveFloat = Field(default=5.0, description="Health check interval")
+
+      # Network settings
+>     max_packet_size: PositiveInt = Field(default=1024, description="Maximum packet size")
+>     min_packet_size: PositiveInt = Field(default=20, description="Minimum packet size")
+>     max_retries: PositiveInt = Field(default=3, description="Maximum retry attempts")
+>     backoff_factor: PositiveFloat = Field(default=0.3, description="Backoff factor for retries")
+>     connection_pool_size: PositiveInt = Field(default=30, description="Connection pool size")
+
+
+> class GatewaySettings(BaseSettings):
+>     """Main gateway configuration combining all subsystems."""
+
+>     model_config = SettingsConfigDict(
+>         env_file=(".env", ".env.local", ".env.prod"),
+>         case_sensitive=False,
+>         extra="ignore",
+>     )
+
+>     mqtt: MQTTSettings = Field(default_factory=MQTTSettings)
+>     speedwire: SpeedwireSettings = Field(default_factory=SpeedwireSettings)
+
+>     log_level: str = Field(default="INFO", pattern=r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+>     log_format: str = Field(default="structured", pattern=r"^(console|json|structured)$")
+
+>     enable_jit: bool = Field(default=True, description="Enable JIT compilation")
+>     enable_monitoring: bool = Field(default=False, description="Enable Prometheus metrics")
+>     metrics_port: PortRange = Field(default=8080, description="Metrics endpoint port")
+
+      # Performance settings
+>     lru_cache_size: PositiveInt = Field(default=200, description="LRU cache size")
+>     batch_size: PositiveInt = Field(default=50, description="Batch processing size")
+>     batch_flush_interval: PositiveFloat = Field(default=0.05, description="Batch flush interval")
+>     max_queue_size: PositiveInt = Field(default=10000, description="Maximum queue size")
+
+      # Physical limits
+>     max_voltage: PositiveFloat = Field(default=300.0, description="Maximum voltage limit")
+>     max_current: PositiveFloat = Field(default=100.0, description="Maximum current limit")
+>     max_power: PositiveFloat = Field(default=50000.0, description="Maximum power limit")
+>     min_frequency: PositiveFloat = Field(default=45.0, description="Minimum frequency limit")
+>     max_frequency: PositiveFloat = Field(default=65.0, description="Maximum frequency limit")
+>     default_frequency: PositiveFloat = Field(default=50.0, description="Default frequency")
+>     min_power_factor_threshold: PositiveFloat = Field(default=0.01, description="Minimum power factor threshold")
+
+      # Device configuration
+>     default_sw_version: tuple[int, int, int, str] = Field(
+>         default=(2, 3, 4, "R"),
+>         description="Default software version",
+>     )
+
+      # Logging settings
+>     mqtt_log_level: str = Field(
+>         default="WARNING",
+>         pattern=r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
+>         description="MQTT specific log level",
+>     )
+
+
+> def create_phase_data_from_mqtt(
+>     power: float,
+>     voltage: float,
+>     current: float = 0.0,
+>     power_factor: float = 1.0,
+>     energy_consumed: float = 0.0,
+> ) -> PhaseData:
+>     """Factory function to create PhaseData with validation."""
+!     return PhaseData(
+!         power=power,
+!         voltage=voltage,
+!         current=current,
+!         pf=power_factor,
+!         energy_consumed=energy_consumed,
+!         energy_exported=0.0,
+!     )
+
+
+> def create_3em_data_from_phases(
+>     phase_a: PhaseData,
+>     phase_b: PhaseData,
+>     phase_c: PhaseData,
+>     frequency: float = 50.0,
+>     device_id: str | None = None,
+> ) -> Shelly3EMData:
+>     """Factory function to create Shelly3EMData from individual phases."""
+!     return Shelly3EMData(
+!         a=phase_a,
+!         b=phase_b,
+!         c=phase_c,
+!         freq_hz=frequency,
+!         device_id=device_id,
+!     )
